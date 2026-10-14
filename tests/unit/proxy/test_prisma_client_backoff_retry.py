@@ -384,3 +384,39 @@ class TestPrismaClientBackoffRetry:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_prisma_http_config_from_env_parses_timeout(monkeypatch):
+    from litellm.proxy.utils import _prisma_http_config_from_env
+
+    monkeypatch.setenv("DATABASE_HTTP_TIMEOUT_SECONDS", "120")
+    assert _prisma_http_config_from_env() == {"timeout": 120.0}
+
+
+def test_prisma_http_config_from_env_unset_is_empty(monkeypatch):
+    from litellm.proxy.utils import _prisma_http_config_from_env
+
+    monkeypatch.delenv("DATABASE_HTTP_TIMEOUT_SECONDS", raising=False)
+    assert _prisma_http_config_from_env() == {}
+
+
+@pytest.mark.parametrize("bad", ["not-a-number", "0", "-5"])
+def test_prisma_http_config_from_env_invalid_falls_back(monkeypatch, bad):
+    from litellm.proxy.utils import _prisma_http_config_from_env
+
+    monkeypatch.setenv("DATABASE_HTTP_TIMEOUT_SECONDS", bad)
+    assert _prisma_http_config_from_env() == {}
+
+
+def test_prisma_client_builds_with_env_timeout(monkeypatch):
+    """The env timeout reaches the underlying prisma.Prisma constructor."""
+    monkeypatch.setenv("DATABASE_HTTP_TIMEOUT_SECONDS", "90")
+
+    with patch("prisma.Prisma") as prisma_cls:
+        PrismaClient(
+            database_url="postgresql://user:pass@localhost:5432/db",
+            proxy_logging_obj=MagicMock(),
+        )
+
+    assert prisma_cls.call_count == 1
+    assert prisma_cls.call_args.kwargs["http"] == {"timeout": 90.0}

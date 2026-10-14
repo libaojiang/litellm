@@ -4656,6 +4656,35 @@ class _StaleReadEngine:
         return self.wrapper is current and self.generation == current.engine_generation
 
 
+def _prisma_http_config_from_env() -> "HttpConfig":
+    """Prisma query-engine HTTP config from DATABASE_HTTP_TIMEOUT_SECONDS.
+
+    prisma-client-py defaults to a 30s HTTP timeout, so a single-transaction
+    job that scans a large table (the budget reset's end-user UPDATE) dies
+    with httpx.ReadTimeout and rolls back, every run, once the table grows
+    past what a 30s statement can cover. Operators who size that statement
+    can raise the timeout without code changes.
+    """
+    raw_timeout: Final[str | None] = os.getenv("DATABASE_HTTP_TIMEOUT_SECONDS")
+    if raw_timeout is None:
+        return {}
+    try:
+        timeout: Final[float] = float(raw_timeout)
+    except ValueError:
+        verbose_proxy_logger.warning(
+            "Ignoring invalid DATABASE_HTTP_TIMEOUT_SECONDS=%r; expected a number of seconds",
+            raw_timeout,
+        )
+        return {}
+    if timeout <= 0:
+        verbose_proxy_logger.warning(
+            "Ignoring non-positive DATABASE_HTTP_TIMEOUT_SECONDS=%r",
+            raw_timeout,
+        )
+        return {}
+    return {"timeout": timeout}
+
+
 class PrismaClient:
     spend_log_transactions: list = []
     _spend_log_transactions_lock = asyncio.Lock()
@@ -4699,6 +4728,10 @@ class PrismaClient:
             raise Exception("Unable to find Prisma binaries. Please run 'prisma generate' first.")
         token_auth: Final = self.token_auth
         writer_token_auth: Final = None if database_url_is_pooled() else token_auth
+        if http_client is None:
+            http_client = _prisma_http_config_from_env()
+        else:
+            http_client = {**_prisma_http_config_from_env(), **http_client}
         # When read-replica routing is on, tag log lines with [writer]/[reader]
         # so the two wrappers' interleaved token refresh logs can be told apart.
         # Single-DB deployments get an empty prefix (logs unchanged).
